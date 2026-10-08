@@ -10,6 +10,24 @@ static int failures;
     fprintf(stderr,"FAIL %s:%d: ",__FILE__,__LINE__); \
     fprintf(stderr,__VA_ARGS__); fputc('\n',stderr); failures++; } } while (0)
 
+static void check_missing_expert_diagnostic(void) {
+    FILE *out = tmpfile();
+    CHECK(out != NULL, "cannot open diagnostic stream");
+    if (!out) return;
+    const char *name = "model.layers.0.mlp.experts.0.merged_weight";
+    report_missing_expert_tensor(out, name);
+    fflush(out);
+    rewind(out);
+    char message[512] = {0};
+    fread(message, 1, sizeof(message) - 1, out);
+    CHECK(strstr(message, name) != NULL, "missing tensor name: %s", message);
+    CHECK(strstr(message, "convert_olmoe_merged.py --model <source> --out <converted>") != NULL,
+          "missing conversion command: %s", message);
+    CHECK(strstr(message, "use <converted> as --model") != NULL,
+          "missing runtime instruction: %s", message);
+    fclose(out);
+}
+
 static void init_cache(Model *m, int experts, int cap) {
     memset(m, 0, sizeof(*m));
     m->c.n_layers = 1; m->c.n_experts = experts;
@@ -259,6 +277,7 @@ static void check_kv_room_gives_back_slots(void) {
 }
 
 int main(void) {
+    check_missing_expert_diagnostic();
     Model m; init_cache(&m, 6, 2); LCache *lc = &m.cache[0]; lc->n = 2;
     cache_publish(&m, 0, &lc->slots[0], 1);
     cache_publish(&m, 0, &lc->slots[1], 2);
