@@ -425,6 +425,7 @@ def run_persistent_engine(engine, snap, prompt, max_new, warmup_runs, warm_runs,
 def run_fresh_engine(engine, snap, prompt, max_new, runs, cap, bits, memory_gb=None):
     results = []
     engine_name = os.path.basename(engine).lower()
+    is_qwen = engine_name in ("qwen36", "qwen36.exe", "qwen38", "qwen38.exe")
 
     for i in range(runs):
         env = dict(os.environ, CHAT="1", COLI_TEMP="0", MAX_NEW=str(max_new),
@@ -441,7 +442,7 @@ def run_fresh_engine(engine, snap, prompt, max_new, runs, cap, bits, memory_gb=N
             mem_str = str(int(memory_gb)) if memory_gb is not None else "32"
             cmd = [engine, snap, prompt, "--max-tokens", str(max_new), "--memory-gb", mem_str]
             stdin_input = None
-        elif engine_name in ("qwen36", "qwen36.exe", "qwen38", "qwen38.exe"):
+        elif is_qwen:
             # Qwen3.6 and Qwen3.8 read a prompt filename at argv[3]; stdin is
             # reserved for its persistent SERVE protocol.  Close the temporary
             # file before launch so this path also works on Windows.
@@ -479,14 +480,19 @@ def run_fresh_engine(engine, snap, prompt, max_new, runs, cap, bits, memory_gb=N
             )
 
         # 1. Try standard load & RSS regex
-        m = LOAD_RE.search(output)
+        # Qwen emits diagnostics to stderr; stdout is model-generated text and
+        # may itself contain strings that look like benchmark diagnostics.
+        m = LOAD_RE.search(proc.stderr if is_qwen else output)
         if m:
             load_s, rss = float(m.group(1)), float(m.group(2))
-            speed = QWEN38_SPEED_RE.search(output) if engine_name in ("qwen36", "qwen36.exe", "qwen38", "qwen38.exe") else None
-            if engine_name in ("qwen36", "qwen36.exe", "qwen38", "qwen38.exe") and not speed:
+            speeds = list(QWEN38_SPEED_RE.finditer(proc.stderr)) if is_qwen else []
+            speed = speeds[-1] if speeds else None
+            if is_qwen and not speed:
                 sys.exit(f"could not parse Qwen generation count/speed:\n{output[-400:]}")
             gen_s = float(speed.group(1)) if speed else wall - load_s
             tok_count = int(speed.group(2)) if speed else max_new
+        elif is_qwen:
+            sys.exit(f"could not parse Qwen engine load/RSS line:\n{output[-400:]}")
         else:
             # 2. Fallback parser for engines like deepseek_v4 that output TUNE decode / timing lines
             m_tune = TUNE_RE.search(output)
