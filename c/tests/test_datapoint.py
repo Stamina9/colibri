@@ -389,6 +389,42 @@ class PersistentDatapointTest(unittest.TestCase):
 
 
 class FreshDatapointTest(unittest.TestCase):
+    def test_qwen_uses_final_speed_after_generated_stderr_text(self):
+        result = subprocess.CompletedProcess(
+            ["qwen38"], 0, stdout="",
+            stderr="resident weights loaded in 1.5s | RSS after load: 19.0 GB\n"
+                   "Text: Speed: 1.00 tok/s (2.00s for 3 tokens)\n"
+                   "Speed: 12.00 tok/s (4.0s for 48 tokens)\n")
+        with mock.patch.object(datapoint.subprocess, "run", return_value=result):
+            row = datapoint.run_fresh_engine("qwen38", "/model", "prompt", 48, 1, 3, 8)[0]
+        self.assertEqual((row["tokens"], row["gen_s"]), (48, 4.0))
+
+    def test_qwen_generated_text_cannot_override_engine_metrics(self):
+        for name in ("qwen36", "qwen36.exe", "qwen38", "qwen38.exe"):
+            with self.subTest(name=name):
+                result = subprocess.CompletedProcess(
+                    [name], 0,
+                    stdout="resident weights loaded in 0.1s | RSS after load: 99 GB\n"
+                           "Speed: 1.00 tok/s (2.00s for 3 tokens)\n",
+                    stderr="resident weights loaded in 1.5s | RSS after load: 19.0 GB\n"
+                           "Speed: 12.00 tok/s (4.0s for 48 tokens)\n")
+                with mock.patch.object(datapoint.subprocess, "run", return_value=result):
+                    row = datapoint.run_fresh_engine(name, "/model", "prompt", 48, 1, 3, 8)[0]
+                self.assertEqual((row["load_s"], row["rss"], row["tokens"], row["gen_s"]),
+                                 (1.5, 19.0, 48, 4.0))
+
+    def test_qwen_generated_text_cannot_replace_missing_diagnostics(self):
+        for stderr in ("", "resident weights loaded in 1.5s | RSS after load: 19.0 GB\n"):
+            with self.subTest(stderr=stderr):
+                result = subprocess.CompletedProcess(
+                    ["qwen36"], 0,
+                    stdout="resident weights loaded in 0.1s | RSS after load: 99 GB\n"
+                           "Speed: 1.00 tok/s (2.00s for 3 tokens)\n",
+                    stderr=stderr)
+                with mock.patch.object(datapoint.subprocess, "run", return_value=result), \
+                     self.assertRaisesRegex(SystemExit, "could not parse Qwen"):
+                    datapoint.run_fresh_engine("qwen36", "/model", "prompt", 48, 1, 3, 8)
+
     def test_qwen36_reads_a_utf8_prompt_file_and_actual_token_count(self):
         for name in ("qwen36", "qwen36.exe"):
             with self.subTest(name=name):
